@@ -10,9 +10,17 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.client.default import DefaultBotProperties
 
-from config import TELEGRAM_BOT_TOKEN, ADMIN_IDS, COURSES, USDT_TRC20_WALLET, USDT_ERC20_WALLET, BTC_WALLET, ETH_WALLET
-from storage import SessionLocal, init_db, get_or_create_user, create_order, get_last_pending_order, grant_access, user_has_access
-from models import OrderStatus, Order
+ffrom storage import (
+    init_db, 
+    get_or_create_user, 
+    create_order, 
+    get_last_pending_order, 
+    grant_access, 
+    user_has_access,
+    update_order_status,
+    confirm_payment
+)
+from models import OrderStatus
 
 logging.basicConfig(level=logging.INFO)
 
@@ -58,9 +66,7 @@ def get_payment_actions_kb() -> InlineKeyboardMarkup:
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
-    async with SessionLocal() as session:
-        await get_or_create_user(session, message.from_user.id, message.from_user.username)
-        await session.commit()
+    await get_or_create_user(message.from_user.id, message.from_user.username)
 
     text = (
         "Привет! 👋\n\n"
@@ -87,10 +93,8 @@ async def courses_info(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "my_courses_list")
 async def my_courses_list(callback: CallbackQuery):
-    async with SessionLocal() as session:
-        user = await get_or_create_user(session, callback.from_user.id, callback.from_user.username)
-        has_access = await user_has_access(session, user, 1)
-        await session.commit()
+    await get_or_create_user(callback.from_user.id, callback.from_user.username)
+    has_access = await user_has_access(callback.from_user.id, 1)
 
     if not has_access:
         text = "У тебя ещё нет доступа к Эскортопедии. 😔\n\nНажми «Купить Эскортопедию» чтобы получить доступ!"
@@ -150,10 +154,8 @@ async def back_to_menu(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "buy_course")
 async def buy_course(callback: CallbackQuery, state: FSMContext):
-    async with SessionLocal() as session:
-        user = await get_or_create_user(session, callback.from_user.id, callback.from_user.username)
-        has_access = await user_has_access(session, user, 1)
-        await session.commit()
+    await get_or_create_user(callback.from_user.id, callback.from_user.username)
+    has_access = await user_has_access(callback.from_user.id, 1)
     if has_access:
         await callback.answer("У тебя уже есть доступ ✅", show_alert=True)
         return
@@ -174,11 +176,9 @@ async def choose_currency(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Недоступно", show_alert=True)
         return
     course_info = COURSES[1]
-    async with SessionLocal() as session:
-        user = await get_or_create_user(session, callback.from_user.id, callback.from_user.username)
-        order = await create_order(session, user, 1, course_info["price"], currency_code, wallet_address)
-        await session.commit()
-    await state.update_data(order_id=order.id)
+    user = await get_or_create_user(callback.from_user.id, callback.from_user.username)
+    order = await create_order(user["id"], 1, course_info["price"], currency_code, wallet_address)
+    await state.update_data(order_id=order["id"])
     human_name = currency_code.replace("_", " ")
     text = f"<b>💳 Оплата</b>\n\n📊 Сумма: <b>{course_info['price']} USDT</b>\n\n📍 Адрес:\n<code>{wallet_address}</code>\n\n⚠️ Проверь адрес и сеть!"
     await state.set_state(BuyStates.WAITING_PAYMENT)
@@ -203,36 +203,35 @@ async def i_paid(callback: CallbackQuery, state: FSMContext):
 
 @dp.message(BuyStates.WAITING_PROOF)
 async def receive_proof(message: Message, state: FSMContext):
-    async with SessionLocal() as session:
-        user = await get_or_create_user(session, message.from_user.id, message.from_user.username)
-        order = await get_last_pending_order(session, user)
-        if not order:
-            await message.answer("Заказ не найден. /start")
-            await state.clear()
-            return
-        proof_file_id = None
-        tx_hash = None
-        if message.photo:
-            proof_file_id = message.photo[-1].file_id
-        elif message.document:
-            proof_file_id = message.document.file_id
-        elif message.text:
-            tx_hash = message.text.strip()
-        order.status = OrderStatus.WAITING_REVIEW
-        if proof_file_id:
-            order.proof_file_id = proof_file_id
-        if tx_hash:
-            order.tx_hash = tx_hash
-        await session.commit()
+    state_data = await state.get_data()
+    user = await get_or_create_user(message.from_user.id, message.from_user.username)
+    order = await get_last_pending_order(user["id"])
+    if not order:
+        await message.answer("Заказ не найден. Начни заново /start")
+        await state.clear()
+        return
+    
+    proof_file_id = None
+    tx_hash = None
+    if message.photo:
+        proof_file_id = message.photo[-1].file_id
+    elif message.document:
+        proof_file_id = message.document.file_id
+    elif message.text:
+        tx_hash = message.text.strip()
+    
+    await update_order_status(order["id"], OrderStatus.WAITING_REVIEW, tx_hash, proof_file_id)
+    
     course_info = COURSES[1]
     for admin_id in ADMIN_IDS:
         text = f"🔔 <b>НОВАЯ ОПЛАТА</b>\n\n📚 {course_info['name']}\n👤 @{message.from_user.username or message.from_user.id}\n💵 {course_info['price']} USDT\n"
         if tx_hash:
             text += f"\n🔗 TXID: <code>{tx_hash}</code>\n"
-        text += f"\n✅ /confirm {order.id} {message.from_user.id}"
+        text += f"\n✅ /confirm {order['id']} {message.from_user.id}"
         await bot.send_message(admin_id, text)
         if proof_file_id:
             await bot.send_photo(admin_id, proof_file_id)
+    
     await state.clear()
     await message.answer("✅ Чек получен! Проверим и отправим томы!")
 
@@ -258,17 +257,11 @@ async def cmd_confirm(message: Message):
     except ValueError:
         await message.answer("Должны быть числа.")
         return
-    async with SessionLocal() as session:
-        res = await session.get(Order, order_id)
-        if not res:
-            await message.answer("❌ Заказ не найден.")
-            return
-        order = res
-        order.status = OrderStatus.PAID
-        order.paid_at = datetime.utcnow()
-        user = await get_or_create_user(session, user_tg_id, None)
-        await grant_access(session, user, 1, volumes_count=2)
-        await session.commit()
+    
+    await confirm_payment(order_id)
+    user = await get_or_create_user(user_tg_id, None)
+    await grant_access(user["id"], 1, volumes_count=2)
+    
     course_info = COURSES[1]
     try:
         for volume in course_info["volumes"]:
@@ -283,10 +276,8 @@ async def cmd_confirm(message: Message):
 
 @dp.message(Command("my_books"))
 async def my_books_cmd(message: Message):
-    async with SessionLocal() as session:
-        user = await get_or_create_user(session, message.from_user.id, message.from_user.username)
-        has_access = await user_has_access(session, user, 1)
-        await session.commit()
+    user = await get_or_create_user(message.from_user.id, message.from_user.username)
+    has_access = await user_has_access(user["id"], 1)
     if not has_access:
         await message.answer("❌ Нет доступа. /start")
         return

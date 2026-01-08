@@ -1,69 +1,102 @@
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
-from sqlalchemy import select
+"""
+Асинхронная работа с SQLite БД без SQLAlchemy.
+"""
+
+import aiosqlite
 from datetime import datetime
+from models import User, Order, Access, OrderStatus
 
-from config import DATABASE_URL
-from models import Base, User, Order, Access, OrderStatus
-
-engine = create_async_engine(DATABASE_URL, echo=False, future=True)
-SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+DB_PATH = "bot.db"
 
 
 async def init_db():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    """Инициализация БД."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tg_id INTEGER UNIQUE NOT NULL,
+                username TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                last_seen TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                course_id INTEGER NOT NULL,
+                amount_usdt FLOAT NOT NULL,
+                currency TEXT NOT NULL,
+                status TEXT DEFAULT 'pending',
+                wallet_address TEXT NOT NULL,
+                tx_hash TEXT,
+                proof_file_id TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                paid_at TEXT,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS access (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                course_id INTEGER NOT NULL,
+                volumes_count INTEGER DEFAULT 2,
+                granted_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                UNIQUE(user_id, course_id)
+            )
+        """)
+        await db.commit()
 
 
-async def get_or_create_user(session: AsyncSession, tg_id: int, username: str | None):
-    res = await session.execute(select(User).where(User.tg_id == tg_id))
-    user = res.scalar_one_or_none()
-    if user:
-        user.last_seen = datetime.utcnow()
-        return user
-    user = User(tg_id=tg_id, username=username)
-    session.add(user)
-    await session.flush()
-    return user
+async def get_or_create_user(tg_id: int, username: str | None) -> dict:
+    """Получить или создать пользователя."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT id FROM users WHERE tg_id = ?", (tg_id,))
+        row = await cursor.fetchone()
+        
+        if row:
+            # Обновляем last_seen
+            await db.execute(
+                "UPDATE users SET last_seen = ? WHERE tg_id = ?",
+                (datetime.utcnow().isoformat(), tg_id)
+            )
+            await db.commit()
+            return {"id": row[0], "tg_id": tg_id, "username": username}
+        
+        # Создаём нового пользователя
+        cursor = await db.execute(
+            "INSERT INTO users (tg_id, username) VALUES (?, ?)",
+            (tg_id, username)
+        )
+        await db.commit()
+        return {"id": cursor.lastrowid, "tg_id": tg_id, "username": username}
 
 
-async def create_order(session: AsyncSession, user: User, course_id: int, amount_usdt: float, currency: str, wallet_address: str):
-    order = Order(
-        user_id=user.id,
-        course_id=course_id,
-        amount_usdt=amount_usdt,
-        currency=currency,
-        wallet_address=wallet_address,
-        status=OrderStatus.PENDING,
-    )
-    session.add(order)
-    await session.flush()
-    return order
+async def create_order(user_id: int, course_id: int, amount_usdt: float, currency: str, wallet_address: str) -> dict:
+    """Создать заказ."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """INSERT INTO orders (user_id, course_id, amount_usdt, currency, wallet_address, status)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (user_id, course_id, amount_usdt, currency, wallet_address, OrderStatus.PENDING)
+        )
+        await db.commit()
+        order_id = cursor.lastrowid
+        return {"id": order_id, "user_id": user_id, "status": OrderStatus.PENDING}
 
 
-async def get_last_pending_order(session: AsyncSession, user: User):
-    res = await session.execute(
-        select(Order)
-        .where(Order.user_id == user.id)
-        .where(Order.status.in_([OrderStatus.PENDING, OrderStatus.WAITING_PROOF, OrderStatus.WAITING_REVIEW]))
-        .order_by(Order.id.desc())
-    )
-    return res.scalar_one_or_none()
-
-
-async def grant_access(session: AsyncSession, user: User, course_id: int, volumes_count: int = 2):
-    res = await session.execute(
-        select(Access).where(Access.user_id == user.id).where(Access.course_id == course_id)
-    )
-    if res.scalar_one_or_none():
-        return None
-    access = Access(user_id=user.id, course_id=course_id, volumes_count=volumes_count)
-    session.add(access)
-    await session.flush()
-    return access
-
-
-async def user_has_access(session: AsyncSession, user: User, course_id: int) -> bool:
-    res = await session.execute(
-        select(Access).where(Access.user_id == user.id).where(Access.course_id == course_id)
-    )
-    return res.scalar_one_or_none() is not None
+async def get_last_pending_order(user_id: int) -> dict | None:
+    """Получить последний незавершённый заказ."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """SELECT id, user_id, course_id, amount_usdt, currency, status, wallet_address, tx_hash, proof_file_id
+               FROM orders
+               WHERE user_id = ? AND status IN (?, ?, ?)
+               ORDER BY id DESC
+               LIMIT 1""",
+            (user_id, OrderStatus.PENDING, OrderStatus.WAITING_PROOF, OrderStatus.WAITING_REVIEW)
+        )
+        row = await cursor.fetcho
