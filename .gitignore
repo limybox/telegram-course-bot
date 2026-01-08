@@ -1,0 +1,12 @@
+.env
+.env.local
+__pycache__/
+*.py[cod]
+venv/
+.DS_Store
+*.db
+*.sqlite
+node_modules/
+.serverless/
+.idea/
+.vscode/
