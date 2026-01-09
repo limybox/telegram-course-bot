@@ -1,3 +1,7 @@
+"""
+Telegram бот для продажи Эскортопедии.
+"""
+
 import asyncio
 import logging
 from datetime import datetime
@@ -10,6 +14,10 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.client.default import DefaultBotProperties
 
+from config import (
+    TELEGRAM_BOT_TOKEN, ADMIN_IDS, COURSES, 
+    USDT_TRC20_WALLET, USDT_ERC20_WALLET, BTC_WALLET, ETH_WALLET
+)
 from storage import (
     init_db, 
     get_or_create_user, 
@@ -23,17 +31,18 @@ from storage import (
 from models import OrderStatus
 
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-bot = Bot(
-    token=TELEGRAM_BOT_TOKEN,
-    default=DefaultBotProperties(parse_mode="HTML")
-)
-dp = Dispatcher(storage=MemoryStorage())
 
 class BuyStates(StatesGroup):
     CHOOSING_CURRENCY = State()
     WAITING_PAYMENT = State()
     WAITING_PROOF = State()
+
+
+# Глобальные переменные
+bot = None
+dp = None
 
 
 def get_main_menu_kb() -> InlineKeyboardMarkup:
@@ -67,13 +76,13 @@ def get_payment_actions_kb() -> InlineKeyboardMarkup:
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await get_or_create_user(message.from_user.id, message.from_user.username)
-
     text = (
         "Привет! 👋\n\n"
         "Добро пожаловать в <b>Эскортопедию</b> — твой полный гайд по сфере!\n\n"
         "Здесь ты найдёшь:\n"
-        "• 💡 Эскортопедию (Том 1)\n"
-        "• 📈 Эскортопедию (Том 2)\n"
+        "• 💡 Гайды и фишки для новичков (Том 1)\n"
+        "• 📈 Продвинутые стратегии заработка (Том 2)\n"
+        "• 🛡️ Советы по безопасности и маркетингу\n\n"
         "<b>Стоимость: 200 USDT за оба тома</b> 💰"
     )
     await state.clear()
@@ -83,7 +92,7 @@ async def cmd_start(message: Message, state: FSMContext):
 @dp.callback_query(F.data == "courses_info")
 async def courses_info(callback: CallbackQuery):
     course_info = COURSES[1]
-    text = f"<b>📖 {course_info['name']}</b>\n\n💵 <b>Цена: {course_info['price']} USDT</b> за оба тома\n\n<b>Содержание:</b>\n\n"
+    text = f"<b>📖 {course_info['name']}</b>\n\n💵 <b>Цена: {course_info['price']} USDT</b>\n\n<b>Содержание:</b>\n\n"
     for idx, volume in enumerate(course_info["volumes"], 1):
         text += f"<b>📕 {volume['title']}</b>\n{volume['description']}\n\n"
     text += "Нажми «Купить Эскортопедию» чтобы начать."
@@ -97,7 +106,7 @@ async def my_courses_list(callback: CallbackQuery):
     has_access = await user_has_access(callback.from_user.id, 1)
 
     if not has_access:
-        text = "У тебя ещё нет доступа к Эскортопедии. 😔\n\nНажми «Купить Эскортопедию» чтобы получить доступ!"
+        text = "У тебя ещё нет доступа. Нажми «Купить Эскортопедию»!"
         await callback.message.edit_text(text, reply_markup=get_main_menu_kb())
         await callback.answer()
         return
@@ -179,8 +188,7 @@ async def choose_currency(callback: CallbackQuery, state: FSMContext):
     user = await get_or_create_user(callback.from_user.id, callback.from_user.username)
     order = await create_order(user["id"], 1, course_info["price"], currency_code, wallet_address)
     await state.update_data(order_id=order["id"])
-    human_name = currency_code.replace("_", " ")
-    text = f"<b>💳 Оплата</b>\n\n📊 Сумма: <b>{course_info['price']} USDT</b>\n\n📍 Адрес:\n<code>{wallet_address}</code>\n\n⚠️ Проверь адрес и сеть!"
+    text = f"<b>💳 Оплата</b>\n\n📊 {course_info['price']} USDT\n\n📍 Адрес:\n<code>{wallet_address}</code>\n\n⚠️ Проверь адрес и сеть!"
     await state.set_state(BuyStates.WAITING_PAYMENT)
     await callback.message.edit_text(text, reply_markup=get_payment_actions_kb())
     await callback.answer()
@@ -188,7 +196,7 @@ async def choose_currency(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(BuyStates.WAITING_PAYMENT, F.data == "how_to_buy_crypto")
 async def how_to_buy_crypto(callback: CallbackQuery):
-    text = "<b>💡 Как купить USDT</b>\n\n1) Зарегистрируйся на Binance.com\n2) Пополни баланс с карты\n3) Купи USDT\n4) Выбери сеть (TRC20/ERC20)\n5) Отправь на адрес из бота\n\nПосле копируй txid и вернись в бот."
+    text = "<b>💡 Как купить USDT</b>\n\n1) Зарегистрируйся на Binance.com\n2) Пополни баланс\n3) Купи USDT\n4) Выбери сеть\n5) Отправь на адрес"
     await callback.answer()
     await callback.message.answer(text)
 
@@ -196,7 +204,7 @@ async def how_to_buy_crypto(callback: CallbackQuery):
 @dp.callback_query(BuyStates.WAITING_PAYMENT, F.data == "i_paid")
 async def i_paid(callback: CallbackQuery, state: FSMContext):
     await state.set_state(BuyStates.WAITING_PROOF)
-    text = "Отправь чек / скрин или txid.\n\nПосле проверки получишь оба тома!"
+    text = "Отправь чек / скрин или txid."
     await callback.message.answer(text)
     await callback.answer()
 
@@ -207,7 +215,7 @@ async def receive_proof(message: Message, state: FSMContext):
     user = await get_or_create_user(message.from_user.id, message.from_user.username)
     order = await get_last_pending_order(user["id"])
     if not order:
-        await message.answer("Заказ не найден. Начни заново /start")
+        await message.answer("Заказ не найден. /start")
         await state.clear()
         return
     
@@ -233,7 +241,7 @@ async def receive_proof(message: Message, state: FSMContext):
             await bot.send_photo(admin_id, proof_file_id)
     
     await state.clear()
-    await message.answer("✅ Чек получен! Проверим и отправим томы!")
+    await message.answer("✅ Чек получен!")
 
 
 @dp.callback_query(F.data == "cancel_order")
@@ -255,7 +263,7 @@ async def cmd_confirm(message: Message):
         order_id = int(parts[1])
         user_tg_id = int(parts[2])
     except ValueError:
-        await message.answer("Должны быть числа.")
+        await message.answer("Числа!")
         return
     
     await confirm_payment(order_id)
@@ -267,7 +275,7 @@ async def cmd_confirm(message: Message):
         for volume in course_info["volumes"]:
             pdf = FSInputFile(volume["pdf_path"])
             await bot.send_document(chat_id=user_tg_id, document=pdf, caption=f"📕 <b>{volume['title']}</b>")
-        await bot.send_message(chat_id=user_tg_id, text="🎉 <b>Оплата подтверждена!</b>\n\n✅ Том 1\n✅ Том 2\n\nУдачи! 💪")
+        await bot.send_message(chat_id=user_tg_id, text="🎉 <b>Оплата подтверждена!</b>\n\n✅ Том 1\n✅ Том 2")
     except Exception as e:
         await message.answer(f"❌ {e}")
         return
@@ -279,7 +287,7 @@ async def my_books_cmd(message: Message):
     user = await get_or_create_user(message.from_user.id, message.from_user.username)
     has_access = await user_has_access(user["id"], 1)
     if not has_access:
-        await message.answer("❌ Нет доступа. /start")
+        await message.answer("❌ Нет доступа.")
         return
     course_info = COURSES[1]
     kb = []
@@ -291,7 +299,31 @@ async def my_books_cmd(message: Message):
 
 
 async def main():
+    global bot, dp
     await init_db()
+    
+    bot = Bot(
+        token=TELEGRAM_BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode="HTML")
+    )
+    dp = Dispatcher(storage=MemoryStorage())
+    
+    # Регистрируем handlers
+    dp.message.register(cmd_start)
+    dp.callback_query.register(courses_info)
+    dp.callback_query.register(my_courses_list)
+    dp.callback_query.register(download_volume)
+    dp.callback_query.register(download_all_volumes)
+    dp.callback_query.register(back_to_menu)
+    dp.callback_query.register(buy_course)
+    dp.callback_query.register(choose_currency)
+    dp.callback_query.register(how_to_buy_crypto)
+    dp.callback_query.register(i_paid)
+    dp.message.register(receive_proof)
+    dp.callback_query.register(cancel_order)
+    dp.message.register(cmd_confirm)
+    dp.message.register(my_books_cmd)
+    
     await dp.start_polling(bot)
 
 
