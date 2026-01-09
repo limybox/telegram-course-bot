@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-TELEGRAM_BOT_TOKEN = ("7714261071:AAGr7LMsD1xax9eB_jIfV48N8sFT6WPDfZA")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x]
 
 USDT_TRC20_WALLET = os.getenv("USDT_TRC20_WALLET")
