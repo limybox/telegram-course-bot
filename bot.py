@@ -10,7 +10,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.client.default import DefaultBotProperties
 
-ffrom storage import (
+from storage import (
     init_db, 
     get_or_create_user, 
     create_order, 
