@@ -40,11 +40,6 @@ class BuyStates(StatesGroup):
     WAITING_PROOF = State()
 
 
-# Глобальные переменные
-bot = None
-dp = None
-
-
 def get_main_menu_kb() -> InlineKeyboardMarkup:
     kb = [
         [InlineKeyboardButton(text="🛍️ Купить Эскортопедию", callback_data="buy_course")],
@@ -73,7 +68,8 @@ def get_payment_actions_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
-@dp.message(CommandStart())
+# Handlers (без декораторов!)
+
 async def cmd_start(message: Message, state: FSMContext):
     await get_or_create_user(message.from_user.id, message.from_user.username)
     text = (
@@ -89,7 +85,6 @@ async def cmd_start(message: Message, state: FSMContext):
     await message.answer(text, reply_markup=get_main_menu_kb())
 
 
-@dp.callback_query(F.data == "courses_info")
 async def courses_info(callback: CallbackQuery):
     course_info = COURSES[1]
     text = f"<b>📖 {course_info['name']}</b>\n\n💵 <b>Цена: {course_info['price']} USDT</b>\n\n<b>Содержание:</b>\n\n"
@@ -100,7 +95,6 @@ async def courses_info(callback: CallbackQuery):
     await callback.answer()
 
 
-@dp.callback_query(F.data == "my_courses_list")
 async def my_courses_list(callback: CallbackQuery):
     await get_or_create_user(callback.from_user.id, callback.from_user.username)
     has_access = await user_has_access(callback.from_user.id, 1)
@@ -124,7 +118,6 @@ async def my_courses_list(callback: CallbackQuery):
     await callback.answer()
 
 
-@dp.callback_query(F.data.startswith("download_volume_"))
 async def download_volume(callback: CallbackQuery):
     volume_idx = int(callback.data.split("_")[-1]) - 1
     course_info = COURSES[1]
@@ -140,7 +133,6 @@ async def download_volume(callback: CallbackQuery):
         await callback.answer(f"❌ Ошибка: {e}", show_alert=True)
 
 
-@dp.callback_query(F.data == "download_all_volumes")
 async def download_all_volumes(callback: CallbackQuery):
     course_info = COURSES[1]
     for volume in course_info["volumes"]:
@@ -153,7 +145,6 @@ async def download_all_volumes(callback: CallbackQuery):
     await callback.answer("✅ Оба тома отправлены!")
 
 
-@dp.callback_query(F.data == "back_to_menu")
 async def back_to_menu(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     text = "Привет! 👋\n\nДобро пожаловать в <b>Эскортопедию</b>"
@@ -161,7 +152,6 @@ async def back_to_menu(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@dp.callback_query(F.data == "buy_course")
 async def buy_course(callback: CallbackQuery, state: FSMContext):
     await get_or_create_user(callback.from_user.id, callback.from_user.username)
     has_access = await user_has_access(callback.from_user.id, 1)
@@ -176,7 +166,6 @@ async def buy_course(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@dp.callback_query(BuyStates.CHOOSING_CURRENCY, F.data.startswith("cur_"))
 async def choose_currency(callback: CallbackQuery, state: FSMContext):
     currency_code = callback.data.split("_", 1)[1]
     wallet_map = {"USDT_TRC20": USDT_TRC20_WALLET, "USDT_ERC20": USDT_ERC20_WALLET, "BTC": BTC_WALLET, "ETH": ETH_WALLET}
@@ -194,14 +183,12 @@ async def choose_currency(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@dp.callback_query(BuyStates.WAITING_PAYMENT, F.data == "how_to_buy_crypto")
 async def how_to_buy_crypto(callback: CallbackQuery):
     text = "<b>💡 Как купить USDT</b>\n\n1) Зарегистрируйся на Binance.com\n2) Пополни баланс\n3) Купи USDT\n4) Выбери сеть\n5) Отправь на адрес"
     await callback.answer()
     await callback.message.answer(text)
 
 
-@dp.callback_query(BuyStates.WAITING_PAYMENT, F.data == "i_paid")
 async def i_paid(callback: CallbackQuery, state: FSMContext):
     await state.set_state(BuyStates.WAITING_PROOF)
     text = "Отправь чек / скрин или txid."
@@ -209,7 +196,6 @@ async def i_paid(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@dp.message(BuyStates.WAITING_PROOF)
 async def receive_proof(message: Message, state: FSMContext):
     state_data = await state.get_data()
     user = await get_or_create_user(message.from_user.id, message.from_user.username)
@@ -231,6 +217,7 @@ async def receive_proof(message: Message, state: FSMContext):
     await update_order_status(order["id"], OrderStatus.WAITING_REVIEW, tx_hash, proof_file_id)
     
     course_info = COURSES[1]
+    bot = Bot(token=TELEGRAM_BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
     for admin_id in ADMIN_IDS:
         text = f"🔔 <b>НОВАЯ ОПЛАТА</b>\n\n📚 {course_info['name']}\n👤 @{message.from_user.username or message.from_user.id}\n💵 {course_info['price']} USDT\n"
         if tx_hash:
@@ -244,14 +231,12 @@ async def receive_proof(message: Message, state: FSMContext):
     await message.answer("✅ Чек получен!")
 
 
-@dp.callback_query(F.data == "cancel_order")
 async def cancel_order(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.edit_text("❌ Отменено.")
     await callback.answer()
 
 
-@dp.message(Command("confirm"))
 async def cmd_confirm(message: Message):
     if message.from_user.id not in ADMIN_IDS:
         return
@@ -271,6 +256,7 @@ async def cmd_confirm(message: Message):
     await grant_access(user["id"], 1, volumes_count=2)
     
     course_info = COURSES[1]
+    bot = Bot(token=TELEGRAM_BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
     try:
         for volume in course_info["volumes"]:
             pdf = FSInputFile(volume["pdf_path"])
@@ -282,7 +268,6 @@ async def cmd_confirm(message: Message):
     await message.answer(f"✅ Заказ #{order_id} готов!")
 
 
-@dp.message(Command("my_books"))
 async def my_books_cmd(message: Message):
     user = await get_or_create_user(message.from_user.id, message.from_user.username)
     has_access = await user_has_access(user["id"], 1)
@@ -299,7 +284,6 @@ async def my_books_cmd(message: Message):
 
 
 async def main():
-    global bot, dp
     await init_db()
     
     bot = Bot(
@@ -309,20 +293,20 @@ async def main():
     dp = Dispatcher(storage=MemoryStorage())
     
     # Регистрируем handlers
-    dp.message.register(cmd_start)
-    dp.callback_query.register(courses_info)
-    dp.callback_query.register(my_courses_list)
-    dp.callback_query.register(download_volume)
-    dp.callback_query.register(download_all_volumes)
-    dp.callback_query.register(back_to_menu)
-    dp.callback_query.register(buy_course)
-    dp.callback_query.register(choose_currency)
-    dp.callback_query.register(how_to_buy_crypto)
-    dp.callback_query.register(i_paid)
-    dp.message.register(receive_proof)
-    dp.callback_query.register(cancel_order)
-    dp.message.register(cmd_confirm)
-    dp.message.register(my_books_cmd)
+    dp.message.register(cmd_start, CommandStart())
+    dp.callback_query.register(courses_info, F.data == "courses_info")
+    dp.callback_query.register(my_courses_list, F.data == "my_courses_list")
+    dp.callback_query.register(download_volume, F.data.startswith("download_volume_"))
+    dp.callback_query.register(download_all_volumes, F.data == "download_all_volumes")
+    dp.callback_query.register(back_to_menu, F.data == "back_to_menu")
+    dp.callback_query.register(buy_course, F.data == "buy_course")
+    dp.callback_query.register(choose_currency, BuyStates.CHOOSING_CURRENCY, F.data.startswith("cur_"))
+    dp.callback_query.register(how_to_buy_crypto, BuyStates.WAITING_PAYMENT, F.data == "how_to_buy_crypto")
+    dp.callback_query.register(i_paid, BuyStates.WAITING_PAYMENT, F.data == "i_paid")
+    dp.message.register(receive_proof, BuyStates.WAITING_PROOF)
+    dp.callback_query.register(cancel_order, F.data == "cancel_order")
+    dp.message.register(cmd_confirm, Command("confirm"))
+    dp.message.register(my_books_cmd, Command("my_books"))
     
     await dp.start_polling(bot)
 
