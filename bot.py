@@ -96,8 +96,8 @@ async def courses_info(callback: CallbackQuery):
 
 
 async def my_courses_list(callback: CallbackQuery):
-    await get_or_create_user(callback.from_user.id, callback.from_user.username)
-    has_access = await user_has_access(callback.from_user.id, 1)
+    user = await get_or_create_user(callback.from_user.id, callback.from_user.username)
+    has_access = await user_has_access(user["id"], 1)  # ← ПРАВИЛЬНО (user["id"])
 
     if not has_access:
         text = "У тебя ещё нет доступа. Нажми «Купить Эскортопедию»!"
@@ -153,8 +153,8 @@ async def back_to_menu(callback: CallbackQuery, state: FSMContext):
 
 
 async def buy_course(callback: CallbackQuery, state: FSMContext):
-    await get_or_create_user(callback.from_user.id, callback.from_user.username)
-    has_access = await user_has_access(callback.from_user.id, 1)
+    user = await get_or_create_user(callback.from_user.id, callback.from_user.username)
+    has_access = await user_has_access(user["id"], 1)  # ← ПРАВИЛЬНО
     if has_access:
         await callback.answer("У тебя уже есть доступ ✅", show_alert=True)
         return
